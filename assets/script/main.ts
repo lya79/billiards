@@ -1,4 +1,7 @@
+import { RayCast } from "./ray-cast.ts";
+
 const { ccclass, property } = cc._decorator;
+
 
 @ccclass
 export class Main extends cc.Component {
@@ -7,8 +10,8 @@ export class Main extends cc.Component {
     @property(cc.Prefab)
     ballPrefab: cc.Prefab = null;
 
-    radius: number;
-    angle: number;
+    // radius: number;
+    // angle: number;
 
     public onLoad() {
         { // 開啟物力系統
@@ -29,20 +32,6 @@ export class Main extends cc.Component {
             manager.enabledDebugDraw = true;
             manager.enabledDrawBoundingBox = true;
         }
-
-        { // TODO 繪製射線
-            this.radius = 1000;
-            this.angle = 0;
-
-            let node = this.node.getChildByName("rayCast");
-            let ctx = node.addComponent(cc.Graphics);
-
-            // let p1 = new cc.Vec2(0, 0);
-            // let p2 = new cc.Vec2(500, 50);
-            // ctx.moveTo(p1.x, p1.y);
-            // ctx.lineTo(p2.x, p2.y);
-            // ctx.stroke();
-        }
     }
 
     public start() {
@@ -57,32 +46,37 @@ export class Main extends cc.Component {
     }
 
     private touchMode(event: cc.Event.EventTouch) {
-        let ballNode = this.node.getChildByName("ball_white");
-        let cueNode = ballNode.getChildByName("cue");
-        this.updateCuePos(cueNode.parent.convertToNodeSpaceAR(event.getLocation()));
+        this.updateCuePos(event.getLocation());
     }
 
     private updateCuePos(pos: cc.Vec2) {
-        let ballNode = this.node.getChildByName("ball_white");
-        let cueNode = ballNode.getChildByName("cue");
+        if (!pos) {
+            pos = new cc.Vec2(this.node.width / 2, this.node.height / 2); // 中央
+        }
+
+        pos = this.node.convertToNodeSpaceAR(pos);
 
         this.touchPos = pos; // 暫存觸碰的位置
 
-        // 更新球桿角度
-        cueNode.rotation = cc.misc.radiansToDegrees(pos.signAngle(cc.v2(-1, 0)));
+        let ballNode = this.node.getChildByName("ball_white");
+        ballNode.rotation = 0; // FIXME 白球碰撞到牆壁後會導致球桿歪掉和射線無法跟隨觸碰位置
 
-        {// 更新球桿位置
-            let distance = ballNode.width / 2; // 球桿和白球的距離
-            let backLocation = this.getCuePos(-distance);
-            cueNode.setPosition(backLocation);
-        }
+        let distance = ballNode.width / 2; // 球桿和白球的距離
+        let backLocation = this.getCuePos(-distance, ballNode.getPosition(), pos);
+
+        let cueNode = this.node.getChildByName("cue");
+        cueNode.setPosition(backLocation);
+
+        let pos2 = this.node.convertToWorldSpaceAR(pos);
+        pos2 = ballNode.convertToNodeSpaceAR(pos2);
+        cueNode.rotation = cc.misc.radiansToDegrees(pos2.signAngle(cc.v2(-1, 0)));
+
+        let rayCastNode = this.node.getChildByName("rayCast");
+        let rayCast = rayCastNode.getComponent(RayCast);
+        rayCast.setPos(-1 * pos2.signAngle(cc.v2(1, 0)));
     }
 
-    private getCuePos(distance: number): cc.Vec2 {
-        let pointA = new cc.Vec2(0, 0); // 白球位置
-        let pointB = this.touchPos; // 最後觸碰到的位置
-
-        // 白球和觸碰的距離
+    private getCuePos(distance: number, pointA: cc.Vec2, pointB: cc.Vec2): cc.Vec2 {
         let r = Math.sqrt(Math.pow((pointB.x - pointA.x), 2) + Math.pow((pointB.y - pointA.y), 2));
 
         let x = (distance * (pointB.x - pointA.x)) / r + pointA.x;
@@ -99,7 +93,7 @@ export class Main extends cc.Component {
         let slider = forceNode.getComponent(cc.Slider);
 
         let ballNode = this.node.getChildByName("ball_white");
-        let cueNode = ballNode.getChildByName("cue");
+        let cueNode = this.node.getChildByName("cue");
 
         let force = slider.progress
         if (force <= 0) {
@@ -108,18 +102,28 @@ export class Main extends cc.Component {
 
         { // 播放球桿打球動畫, 衝力越大拉桿距離越大 
             let distance = ballNode.width / 2; // 球桿和白球的距離
-            distance += slider.progress * 200;
+            distance += slider.progress * 2000;
 
             let srcPos = new cc.Vec2(cueNode.x, cueNode.y);
-            let targetPos = this.getCuePos(-distance);
+            let targetPos = this.getCuePos(-distance, ballNode.getPosition(), this.touchPos);
+
             let self = this;
             cc.tween(cueNode)
                 .to(0.8, { position: targetPos }) // 後退到定點
                 .delay(0.5) // 稍微等待
                 .to(0.1, { position: srcPos }) // 恢復到原點
-                .call(() => { // TODO 撞擊白球
-                    // 計算出球桿和白球的碰撞點
-                    // 針對碰撞點對白球施加加速度
+                .call(() => {
+                    let angle = cueNode.rotation / 180 * Math.PI;
+                    let dir = cc.v2(Math.cos(angle), Math.sin(angle));
+                    dir.normalizeSelf();
+
+                    let speed = distance;
+
+                    let x = dir.x * speed * -1;
+                    let y = dir.y * speed;
+
+                    let rigidBody = ballNode.getComponent(cc.RigidBody);
+                    rigidBody.linearVelocity = new cc.Vec2(x, y);
                 })
                 .start();
         }
@@ -157,7 +161,18 @@ export class Main extends cc.Component {
             }
         }
 
-        this.node.getChildByName("ball_white").getChildByName("cue").active = sleep;
+        let ballNode = this.node.getChildByName("ball_white");
+        let rigidBody = ballNode.getComponent(cc.RigidBody);
+        rigidBody.active = !sleep;
+
+        let rayCastNode = this.node.getChildByName("rayCast");
+        rayCastNode.active = sleep;
+
+        if (!sleep) {
+            this.updateCuePos(null);
+        }
+
+        this.node.getChildByName("cue").active = sleep;
         this.node.getChildByName("restart").active = sleep;
         this.node.getChildByName("force").active = sleep;
         this.node.getChildByName("confirm").active = sleep;
@@ -225,10 +240,9 @@ export class Main extends cc.Component {
 
         { // 重置白球和球桿
             let parentNode = this.node.getChildByName("ball_white");
-            parentNode.setPosition(-250, 0);
+            parentNode.setPosition(-250, 60);
 
-            let loc = new cc.Vec2(100, 0);
-            this.updateCuePos(loc);
+            this.updateCuePos(null);
         }
     }
 }
